@@ -1,82 +1,153 @@
 #!/usr/bin/env python3
 """
-Auto-generate FOIA dashboard from GitHub issues + data/foia-responses/
+DeFlock America FOIA Dashboard Generator
+Scans data/foia-responses/ + GitHub issues → Updates README table
+NO YAML. Pure Python stdlib + requests.
 """
 
 import os
 import json
-import pandas as pd
-from github import Github
+import glob
+import re
 from datetime import datetime
-import yaml
+from github import Github
+import requests
 
+# GitHub setup
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
+REPO_NAME = os.environ.get('GITHUB_REPOSITORY', 'YOURUSERNAME/deflock-america-strategy')
 g = Github(GITHUB_TOKEN)
 
 def scan_foia_folder():
-    """Scan data/foia-responses/ for responses."""
+    """Scan data/foia-responses/ for real FOIA data."""
     responses = {}
-    try:
-        for city_dir in os.listdir('data/foia-responses/'):
-            city_path = f'data/foia-responses/{city_dir}'
-            if os.path.isdir(city_path):
-                files = os.listdir(city_path)
-                responses[city_dir] = {
-                    'files': len([f for f in files if f.endswith(('.csv','.json','.pdf'))]),
-                    'size_mb': sum(os.path.getsize(f'data/foia-responses/{city_dir}/{f}') for f in files)/1e6
-                }
-    except:
-        pass
+    
+    foia_path = 'data/foia-responses'
+    if not os.path.exists(foia_path):
+        return responses
+    
+    for city_dir in os.listdir(foia_path):
+        city_path = os.path.join(foia_path, city_dir)
+        if os.path.isdir(city_path):
+            files = glob.glob(os.path.join(city_path, '*'))
+            data_files = [f for f in files if f.endswith(('.csv', '.json', '.pdf', '.txt'))]
+            
+            total_size = sum(os.path.getsize(f) for f in data_files) / (1024 * 1024)  # MB
+            
+            responses[city_dir.replace('-', ' ').title()] = {
+                'files': len(data_files),
+                'size_mb': round(total_size, 1),
+                'status': '🟢' if len(data_files) > 0 else '🔴'
+            }
+    
     return responses
 
-def scan_github_issues(repo):
-    """Parse FOIA issues for status."""
-    foia_issues = {}
-    for issue in repo.get_issues(state='all'):
-        if 'FOIA' in issue.title.upper() or '#foia' in issue.body.lower():
-            city = extract_city(issue.title)
-            if city:
-                foia_issues[city] = {
-                    'number': issue.number,
-                    'status': issue.state,
-                    'opened': issue.created_at.isoformat(),
-                    'assignees': [u.login for u in issue.assignees]
-                }
-    return foia_issues
+def scan_github_issues():
+    """Scan issues for FOIA + plaintiff leads."""
+    try:
+        repo_name = REPO_NAME.split('/') 
+        repo = g.get_repo(f"{repo_name[0]}/{repo_name[1]}")
+        foia_issues = {}
+        
+        for issue in repo.get_issues(state='all'):
+            title_lower = issue.title.lower()
+            if any(keyword in title_lower for keyword in ['foia', 'records', 'plaintiff']):
+                city_match = re.search(r'([a-zA-Z\s]+?)[,\s]+([A-Z]{2})?', issue.title)
+                if city_match:
+                    city = city_match.group(1).strip().title()
+                    foia_issues[city] = {
+                        'number': issue.number,
+                        'status': '🟢' if issue.state == 'open' else '🟡',
+                        'url': issue.html_url
+                    }
+        return foia_issues
+    except Exception as e:
+        print(f"⚠️ GitHub issues scan failed: {e}")
+        return {}
 
-def generate_markdown(dashboard_data):
-    """Generate README status table."""
-    md = f"""
-## 📊 FOIA Tracker Dashboard (Auto-generated: {datetime.now().strftime('%Y-%m-%d %H:%M UTC')})
+def generate_status_table(foia_data, issues_data):
+    """Generate Markdown table for README."""
+    table_lines = []
+    table_lines.append("| City | FOIA Filed | Files | Size | Status | Issue |")
+    table_lines.append("|------|------------|-------|------|--------|-------|")
+    
+    # Combine FOIA data + issues
+    all_cities = set(list(foia_data.keys()) + list(issues_data.keys()))
+    
+    for city in sorted(all_cities):
+        row_data = foia_data.get(city, {'files': 0, 'size_mb': 0, 'status': '⚪'})
+        issue_data = issues_data.get(city, {})
+        
+        issue_link = f"[#{issue_data.get('number', '')}]({issue_data.get('url', '')})" if issue_data else ""
+        
+        table_lines.append(f"| {city} | ✅ | **{row_data['files']}** | {row_data['size_mb']}MB | {row_data['status']} | {issue_link} |")
+    
+    # Add totals
+    total_files = sum(d['files'] for d in foia_data.values())
+    total_size = sum(d['size_mb'] for d in foia_data.values())
+    table_lines.append(f"| **TOTAL** | **{len(foia_data)} cities** | **{total_files}** | **{total_size:.1f}MB** | | |")
+    
+    return '\n'.join(table_lines)
 
-| City | FOIA Filed | Responses | Size | Status | Issue |
-|------|------------|-----------|------|--------|-------|
+def update_readme(table_md):
+    """Inject table into README.md."""
+    try:
+        with open('README.md', 'r') as f:
+            content = f.read()
+        
+        # Replace or insert FOIA dashboard section
+        if '<!-- FOIA-DASHBOARD -->' in content:
+            content = content.replace('<!-- FOIA-DASHBOARD -->', table_md)
+        else:
+            # Insert before first header
+            content = re.sub(r'^#{1,6}\s', f'{table_md}\n\n\\g<0>', content, flags=re.MULTILINE)
+        
+        with open('README.md', 'w') as f:
+            f.write(content)
+        
+        # Save JSON for Discord
+        status_json = {'foia_data': foia_data, 'issues_data': issues_data, 'total_files': total_files}
+        with open('foia-status.json', 'w') as f:
+            json.dump(status_json, f, indent=2)
+        
+        print(f"✅ README updated! {len(foia_data)} cities tracked")
+        return True
+        
+    except Exception as e:
+        print(f"❌ README update failed: {e}")
+        return False
 
-"""
+def send_discord_if_configured():
+    """Send Discord update if webhook exists."""
+    webhook = os.environ.get('DISCORD_WEBHOOK')
+    if not webhook:
+        return
     
-    for city, data in sorted(dashboard_data.items()):
-        status_emoji = data.get('status', '⚪')
-        issue_link = data.get('issue_link', '')
-        md += f"| {city} | ✅ | {data.get('files', 0)} | {data.get('size_mb', 0):.1f}MB | {status_emoji} | {issue_link} |\n"
-    
-    with open('README.md', 'r') as f:
-        content = f.read()
-    
-    # Inject table into README
-    updated = content.replace('<!-- FOIA-DASHBOARD -->', md)
-    with open('README.md', 'w') as f:
-        f.write(updated)
+    try:
+        payload = {
+            "content": f"📊 **FOIA Dashboard Updated** ({datetime.now().strftime('%H:%M EST')})\n"
+                      f"• {len(foia_data)} cities | {total_files} files | {total_size:.1f}MB\n"
+                      f"🔗 https://YOURUSERNAME.github.io/deflock-america-strategy/"
+        }
+        requests.post(webhook, json=payload)
+        print("✅ Discord notified")
+    except:
+        print("⚠️ Discord notification failed (OK)")
 
 if __name__ == '__main__':
-    repo = g.get_repo("USERNAME/deflock-america-strategy")
-    responses = scan_foia_folder()
-    issues = scan_github_issues(repo)
+    print("🚀 DeFlock America FOIA Dashboard Generator")
     
-    dashboard = {**responses, **issues}
-    generate_markdown(dashboard)
+    foia_data = scan_foia_folder()
+    issues_data = scan_github_issues()
     
-    # Save JSON for other workflows
-    with open('foia-status.json', 'w') as f:
-        json.dump(dashboard, f, indent=2)
+    table_md = generate_status_table(foia_data, issues_data)
     
-    print("✅ Dashboard updated!")
+    success = update_readme(table_md)
+    
+    if success:
+        print("✅ SUCCESS: Dashboard generated!")
+        print(table_md)
+        send_discord_if_configured()
+    else:
+        print("❌ FAILED: Check logs above")
+        exit(1)
