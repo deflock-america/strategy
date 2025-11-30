@@ -30,6 +30,8 @@ jobs:
       - name: Generate FOIA Dashboard
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python .github/scripts/generate-dashboard.py
 
       - name: Update FOIA Status Table
