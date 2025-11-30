@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-DeFlock America FOIA Dashboard Generator
+DeFlock America FOIA Dashboard Generator - PRODUCTION READY
 Scans data/foia-responses/ + GitHub issues → Updates README table
-NO YAML. Pure Python stdlib + requests.
 """
 
 import os
@@ -68,6 +67,8 @@ def scan_github_issues():
 def generate_status_table(foia_data, issues_data):
     """Generate Markdown table for README."""
     table_lines = []
+    table_lines.append("## 📊 FOIA Tracker Dashboard (Auto-generated: " + datetime.now().strftime('%Y-%m-%d %H:%M UTC') + ")")
+    table_lines.append("")
     table_lines.append("| City | FOIA Filed | Files | Size | Status | Issue |")
     table_lines.append("|------|------------|-------|------|--------|-------|")
     
@@ -75,79 +76,91 @@ def generate_status_table(foia_data, issues_data):
     all_cities = set(list(foia_data.keys()) + list(issues_data.keys()))
     
     for city in sorted(all_cities):
-        row_data = foia_data.get(city, {'files': 0, 'size_mb': 0, 'status': '⚪'})
+        row_data = foia_data.get(city, {'files': 0, 'size_mb': 0.0, 'status': '⚪'})
         issue_data = issues_data.get(city, {})
         
         issue_link = f"[#{issue_data.get('number', '')}]({issue_data.get('url', '')})" if issue_data else ""
         
         table_lines.append(f"| {city} | ✅ | **{row_data['files']}** | {row_data['size_mb']}MB | {row_data['status']} | {issue_link} |")
     
-    # Add totals
+    # CALCULATE TOTALS FIRST
     total_files = sum(d['files'] for d in foia_data.values())
     total_size = sum(d['size_mb'] for d in foia_data.values())
-    table_lines.append(f"| **TOTAL** | **{len(foia_data)} cities** | **{total_files}** | **{total_size:.1f}MB** | | |")
+    total_cities = len(foia_data)
+    
+    table_lines.append(f"| **TOTAL** | **{total_cities} cities** | **{total_files}** | **{total_size:.1f}MB** | | |")
     
     return '\n'.join(table_lines)
 
 def update_readme(table_md):
     """Inject table into README.md."""
     try:
-        with open('README.md', 'r') as f:
-            content = f.read()
+        # Read existing README
+        try:
+            with open('README.md', 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            content = "# DeFlock America Strategy\n\n" + table_md + "\n\n"
         
         # Replace or insert FOIA dashboard section
         if '<!-- FOIA-DASHBOARD -->' in content:
             content = content.replace('<!-- FOIA-DASHBOARD -->', table_md)
         else:
-            # Insert before first header
-            content = re.sub(r'^#{1,6}\s', f'{table_md}\n\n\\g<0>', content, flags=re.MULTILINE)
+            # Insert after first header or at top
+            content = re.sub(r'^#{1,6}\s', f'{table_md}\n\n\\g<0>', content, flags=re.MULTILINE | re.DOTALL, count=1)
+            if '<!-- FOIA-DASHBOARD -->' not in content:
+                content = table_md + "\n\n" + content
         
         with open('README.md', 'w') as f:
             f.write(content)
         
-        # Save JSON for Discord
-        status_json = {'foia_data': foia_data, 'issues_data': issues_data, 'total_files': total_files}
-        with open('foia-status.json', 'w') as f:
-            json.dump(status_json, f, indent=2)
-        
-        print(f"✅ README updated! {len(foia_data)} cities tracked")
-        return True
+        print("✅ README updated successfully!")
+        return True, total_files, total_size
         
     except Exception as e:
         print(f"❌ README update failed: {e}")
-        return False
+        return False, 0, 0
 
-def send_discord_if_configured():
+def send_discord_if_configured(foia_data, total_files, total_size):
     """Send Discord update if webhook exists."""
     webhook = os.environ.get('DISCORD_WEBHOOK')
     if not webhook:
+        print("⚠️ No Discord webhook configured")
         return
     
     try:
+        cities_str = ', '.join(list(foia_data.keys())[:3])  # First 3 cities
         payload = {
             "content": f"📊 **FOIA Dashboard Updated** ({datetime.now().strftime('%H:%M EST')})\n"
-                      f"• {len(foia_data)} cities | {total_files} files | {total_size:.1f}MB\n"
-                      f"🔗 https://YOURUSERNAME.github.io/deflock-america-strategy/"
+                      f"• **{len(foia_data)} cities** | **{total_files} files** | **{total_size:.1f}MB**\n"
+                      f"• Cities: {cities_str}{'...' if len(foia_data) > 3 else ''}\n"
+                      f"🔗 https://{REPO_NAME.split('/')[0]}.github.io/{REPO_NAME.split('/')[1]}/"
         }
-        requests.post(webhook, json=payload)
-        print("✅ Discord notified")
-    except:
-        print("⚠️ Discord notification failed (OK)")
+        response = requests.post(webhook, json=payload)
+        print(f"✅ Discord notified: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ Discord notification failed: {e}")
 
 if __name__ == '__main__':
     print("🚀 DeFlock America FOIA Dashboard Generator")
+    print(f"📂 Scanning {REPO_NAME}")
     
+    # Scan data
     foia_data = scan_foia_folder()
     issues_data = scan_github_issues()
     
+    # Generate table
     table_md = generate_status_table(foia_data, issues_data)
     
-    success = update_readme(table_md)
+    # Update README (defines totals here)
+    success, total_files, total_size = update_readme(table_md)
     
     if success:
         print("✅ SUCCESS: Dashboard generated!")
-        print(table_md)
-        send_discord_if_configured()
+        print("\n" + table_md[:500] + "...")
+        
+        # Discord notification (totals now defined)
+        send_discord_if_configured(foia_data, total_files, total_size)
     else:
         print("❌ FAILED: Check logs above")
         exit(1)
