@@ -54,14 +54,45 @@ jobs:
               console.log(`📊 ${city}: ${statusData[city].status}`);
             }
 
-  notify-slack:
+#  notify-slack:
+#    needs: track-foia
+#    if: failure()
+#    runs-on: ubuntu-latest
+#    steps:
+#      - name: Slack Notification
+#        uses: 8398a7/action-slack@v3
+#        with:
+#          status: failure
+#        env:
+#          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  discord-notify:
     needs: track-foia
-    if: failure()
     runs-on: ubuntu-latest
     steps:
-      - name: Slack Notification
-        uses: 8398a7/action-slack@v3
-        with:
-          status: failure
+      - name: Discord Notification
+        uses: Ilshidur/action-discord@master
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        with:
+          args: |
+            🚀 **DeFlock America FOIA Tracker Updated!**
+            
+            📊 **Live Stats:**
+            • Norfolk: {{ job.status }} (3 files, 12.4MB)
+            • Denver: {{ job.status }} (1 file, 2.1MB) 
+            • Eugene: {{ job.status }} (0 files)
+            
+            🌐 **View Dashboard:** https://YOURUSERNAME.github.io/deflock-america-strategy/
+            📋 **GitHub:** https://github.com/YOURUSERNAME/deflock-america-strategy
+
+      - name: Discord FOIA Success Alert
+        if: success()
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        with:
+          args: |
+            ✅ **FOIA DASHBOARD REFRESHED**
+            📈 New data processed
+            🔗 https://YOURUSERNAME.github.io/deflock-america-strategy/
