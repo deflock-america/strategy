@@ -1,0 +1,7 @@
+Red: Critical action files (README, STRATEGY, FOIA)
+
+Blue: Templates (FOIA, CITY-TEMPLATES, ISSUE_TEMPLATE)
+
+Green: Documentation (docs/, CONTRIBUTING)
+
+Yellow: Automation (scripts/, .github/workflows)
